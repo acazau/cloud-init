@@ -1,0 +1,91 @@
+#cloud-config
+
+hostname: stack01
+coreos:
+  fleet:
+    etcd_servers: http://127.0.0.1:4001
+    metadata: role=fullstack
+  etcd:
+    name: etcd
+    addr: 192.168.12.10:4001
+    bind-addr: 0.0.0.0
+    peer-addr: 192.168.12.10:7001
+    cluster-active-size: 1
+    snapshot: true
+  units:
+    - name: static.network
+      command: start
+      content: |
+        [Match]
+        Name=eno16777736
+
+        [Network]
+        Address=192.168.12.10/24
+        DNS=192.168.12.2
+        Gateway=192.168.12.2
+    - name: etcd.service
+      command: start
+    - name: fleet.service
+      command: start
+    - name: docker-tcp.socket
+      command: start
+      enable: true
+      content: |
+        [Unit]
+        Description=Docker Socket for the API
+
+        [Socket]
+        ListenStream=2375
+        Service=docker.service
+        BindIPv6Only=both
+
+        [Install]
+        WantedBy=sockets.target
+    - name: cadvisor.service
+      command: start
+      content: |-
+        [Unit]
+        Description=cAdvisor Service
+        After=docker.service
+        Requires=docker.service
+      
+        [Service]
+        Restart=always
+        ExecStartPre=-/usr/bin/docker kill cadvisor
+        ExecStartPre=-/usr/bin/docker rm -f cadvisor
+        ExecStartPre=/usr/bin/docker pull google/cadvisor:0.11.0
+        ExecStart=/usr/bin/docker run --name cadvisor \
+                                    --volume=/var/run:/var/run:rw \
+                                    --volume=/sys:/sys:ro \
+                                    --volume=/var/lib/docker/:/var/lib/docker:ro \
+                                    --publish=4194:4194 \
+                                    google/cadvisor:0.11.0 --logtostderr \
+                                    --port=4194
+        ExecStop=/usr/bin/docker stop -t 2 cadvisor
+        ExecStop=/usr/bin/docker rm cadvisor
+    - name: vulcan.service
+      command: start
+      content: |-
+        [Unit]
+        Description=Vulcan Service
+        After=docker.service
+        Requires=docker.service
+      
+        [Service]
+        ExecStartPre=-/usr/bin/docker kill vulcan
+        ExecStartPre=-/usr/bin/docker rm -f vulcan
+        ExecStartPre=/usr/bin/docker pull acazau/vulcand:v0.8.0-beta.3
+        ExecStart=/usr/bin/docker run --rm --name vulcan \
+                                   -p 80:80 -p 8182:8182 \
+                                   acazau/vulcand:v0.8.0-beta.3 \
+                                   -etcd=http://172.17.42.1:4001 \
+                                   -apiInterface=0.0.0.0 \
+                                   -interface=0.0.0.0 \
+                                   -port=80 \
+                                   -apiPort=8182
+        ExecStop=/usr/bin/docker stop -t 2 vulcan
+        ExecStop=/usr/bin/docker rm vulcan
+  update:
+    group: alpha
+    reboot-strategy: off
+

@@ -1,30 +1,43 @@
 #cloud-config
 
-hostname: stack01
 coreos:
   fleet:
-    etcd_servers: http://127.0.0.1:4001
+    etcd_servers: http://$private_ipv4:2379
+    public-ip: $private_ipv4
     metadata: role=fullstack
-  etcd:
-    name: etcd
-    addr: 192.168.12.10:4001
-    bind-addr: 0.0.0.0
-    peer-addr: 192.168.12.10:7001
-    cluster-active-size: 1
-    snapshot: true
   units:
-    - name: static.network
-      command: start
-      content: |
-        [Match]
-        Name=eno16777736
-
-        [Network]
-        Address=192.168.12.10/24
-        DNS=192.168.12.2
-        Gateway=192.168.12.2
     - name: etcd.service
       command: start
+      content: |
+        Description=etcd 2.0
+        After=docker.service
+        Requires=docker.service
+
+        [Service]
+        TimeoutStartSec=0
+        SyslogIdentifier=writer_processetcdctl ls
+        EnvironmentFile=/etc/environment
+        ExecStartPre=-/usr/bin/docker kill etcd
+        ExecStartPre=-/usr/bin/docker rm etcd
+        ExecStartPre=/usr/bin/docker pull quay.io/coreos/etcd:v2.0.9
+        ExecStart=/bin/bash -c "/usr/bin/docker run --rm --name etcd \
+          -p 2379:2379 \
+          -p 2380:2380 \
+          -v /opt/etcd:/opt/etcd \
+          -v /usr/share/ca-certificates/:/etc/ssl/certs \
+          quay.io/coreos/etcd:v2.0.9 \
+          -data-dir /opt/etcd \
+          -name %H \
+          -listen-client-urls http://0.0.0.0:2379 \
+          -advertise-client-urls http://$COREOS_PRIVATE_IPV4:2379 \
+          -listen-peer-urls http://0.0.0.0:2380 \
+          -initial-advertise-peer-urls http://$COREOS_PRIVATE_IPV4:2380 \
+          -initial-cluster core-01=http://172.17.8.101:2380,core-02=http://172.17.8.102:2380,core-03=http://172.17.8.103:2380 \
+          -initial-cluster-state new"
+        ExecStop=/usr/bin/docker kill etcd
+
+        [X-Fleet]
+        Conflicts=etcd*
     - name: fleet.service
       command: start
     - name: docker-tcp.socket
@@ -40,7 +53,7 @@ coreos:
         BindIPv6Only=both
 
         [Install]
-        WantedBy=sockets.target
+        WantedBy=sockets.target	  
     - name: cadvisor.service
       command: start
       content: |-
@@ -54,7 +67,7 @@ coreos:
         ExecStartPre=-/usr/bin/docker kill cadvisor
         ExecStartPre=-/usr/bin/docker rm -f cadvisor
         ExecStartPre=/usr/bin/docker pull google/cadvisor:0.11.0
-        ExecStart=/usr/bin/docker run --name cadvisor \
+        ExecStart=/usr/bin/docker run --rm --name cadvisor \
                                     --volume=/var/run:/var/run:rw \
                                     --volume=/sys:/sys:ro \
                                     --volume=/var/lib/docker/:/var/lib/docker:ro \
@@ -69,20 +82,23 @@ coreos:
         [Unit]
         Description=Vulcan Service
         After=docker.service
+        After=etcd.service
         Requires=docker.service
+        Requires=etcd.service
       
         [Service]
+        EnvironmentFile=/etc/environment
         ExecStartPre=-/usr/bin/docker kill vulcan
         ExecStartPre=-/usr/bin/docker rm -f vulcan
         ExecStartPre=/usr/bin/docker pull acazau/vulcand:v0.8.0-beta.3
-        ExecStart=/usr/bin/docker run --rm --name vulcan \
+        ExecStart=/bin/bash -c "/usr/bin/docker run --rm --name vulcan \
                                    -p 80:80 -p 8182:8182 \
                                    acazau/vulcand:v0.8.0-beta.3 \
-                                   -etcd=http://172.17.42.1:4001 \
+                                   -etcd=http://$COREOS_PRIVATE_IPV4:2379 \
                                    -apiInterface=0.0.0.0 \
                                    -interface=0.0.0.0 \
                                    -port=80 \
-                                   -apiPort=8182
+                                   -apiPort=8182"
         ExecStop=/usr/bin/docker stop -t 2 vulcan
         ExecStop=/usr/bin/docker rm vulcan
   update:
